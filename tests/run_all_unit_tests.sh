@@ -120,6 +120,12 @@ if [ -f "tests/test_boundary_math.py" ] && command -v python3 >/dev/null 2>&1; t
     "$PY_BIN tests/test_boundary_math.py"
 fi
 
+# 11. Native Go Coverage-Guided Fuzzing (§1)
+if [ -f "components/blockchain/chaincode/src/scatterproof_fuzz_test.go" ] && command -v go >/dev/null 2>&1; then
+  run_suite "Native Go Coverage Fuzzing (go test -fuzz / Anchor & Revoke Invariants)" \
+    "(cd components/blockchain/chaincode/src && go test -fuzz=FuzzAnchorProof -fuzztime=2s && go test -fuzz=FuzzRevokeProof -fuzztime=2s)"
+fi
+
 # Summary
 echo -e "\n${BOLD}${CYAN}======================================================================${RESET}"
 echo -e "${BOLD}Summary: ${PASSED_SUITES}/${TOTAL_SUITES} test suites passed.${RESET}"

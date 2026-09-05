@@ -16,6 +16,7 @@
     "helmet": "^8.3.0"
   },
   "devDependencies": {
+    "fast-check": "^4.9.0",
     "nodemon": "^3.1.0",
     "supertest": "^7.0.0"
   }
