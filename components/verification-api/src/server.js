@@ -1,6 +1,7 @@
 // TLS trust for crypto-service is established via NODE_EXTRA_CA_CERTS
 // pointing to the ScatterID internal CA cert (ca.crt). Never disable
 // certificate verification globally.
+import http from 'http';
 import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -186,6 +187,22 @@ app.post('/reconciliation/run', requireBearerAuth, async (req, res) => {
   }
 });
 
+export function configureServerTimeouts(server) {
+  const socketTimeout = parseInt(process.env.SERVER_SOCKET_TIMEOUT_MS, 10) || 15000;
+  server.headersTimeout = parseInt(process.env.SERVER_HEADERS_TIMEOUT_MS, 10) || 10000;
+  server.requestTimeout = parseInt(process.env.SERVER_REQUEST_TIMEOUT_MS, 10) || 30000;
+  server.keepAliveTimeout = 5000;
+  server.setTimeout(socketTimeout, (socket) => {
+    socket.destroy();
+  });
+  return server;
+}
+
+export function createServer() {
+  const server = http.createServer(app);
+  return configureServerTimeouts(server);
+}
+
 export { app };
 
 const __filename = fileURLToPath(import.meta.url);
@@ -193,7 +210,8 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === __filename;
 
 if (isMain) {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = createServer();
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`Verification API listening on port ${PORT}`);
     startPeriodicReconciliation(180000); // Reconcile every 3 minutes
   });

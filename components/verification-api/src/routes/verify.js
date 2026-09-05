@@ -92,6 +92,7 @@ export async function verifyRoute(req, res) {
     try {
       const cryptoUrl = process.env.CRYPTO_SERVICE_URL || 'https://localhost:5001';
       const cryptoApiKey = process.env.CRYPTO_SERVICE_API_KEY || '';
+      const cryptoTimeoutMs = parseInt(process.env.CRYPTO_SERVICE_TIMEOUT_MS, 10) || 5000;
       
       const payload = {
         dataHash: recDataHash,
@@ -106,6 +107,7 @@ export async function verifyRoute(req, res) {
           'Authorization': `Bearer ${cryptoApiKey}`,
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(cryptoTimeoutMs),
       });
 
       if (!response.ok) {
@@ -149,6 +151,12 @@ export async function verifyRoute(req, res) {
         reason,
       });
     } catch (err) {
+      if (err.name === 'TimeoutError') {
+        return res.status(504).json({
+          error: 'Cryptographic authority request timed out',
+          code: 'CRYPTO_SERVICE_TIMEOUT',
+        });
+      }
       return res.status(502).json({
         error: 'Cryptographic authority unreachable',
         code: 'CRYPTO_SERVICE_UNREACHABLE',
