@@ -53,26 +53,6 @@ if (!CRYPTO_SERVICE_API_KEY) {
   process.exit(1);
 }
 
-const app = express();
-app.use(express.json());
-app.use(helmet());
-
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: process.env.NODE_ENV === 'test' ? 100000 : 60, // 60 requests per minute per IP in production
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later', code: 'RATE_LIMITED' }
-});
-
-app.use('/issue', apiLimiter);
-app.use('/verify', apiLimiter);
-app.use('/status', apiLimiter);
-app.use('/credentials', apiLimiter);
-app.use('/revoke', apiLimiter);
-app.use('/audit', apiLimiter);
-app.use('/reconciliation', apiLimiter);
-
 /**
  * Timing-safe Bearer token middleware for operator endpoints.
  */
@@ -119,73 +99,141 @@ export function requireRevokeAuth(req, res, next) {
   next();
 }
 
-// Health check endpoint (unauthenticated)
-app.get('/healthz', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'verification-api'
-  });
-});
+export function createApp(options = {}) {
+  const app = express();
 
-// /verify is intentionally open to unauthenticated callers
-app.post('/verify', verifyRoute);
-
-// All write endpoints and administrative logs require scoped authentication
-app.post('/issue', requireBearerAuth, issueRoute);
-app.post('/issue/:credentialId/retry-anchor', requireBearerAuth, retryAnchorRoute);
-app.get('/status/:id', requireBearerAuth, statusRoute);
-app.post('/revoke', requireRevokeAuth, revokeRoute);
-
-app.get('/credentials', requireBearerAuth, async (req, res) => {
-  try {
-    const credentials = await getAllCredentials();
-    res.json({ success: true, credentials });
-  } catch (err) {
-    console.error('Failed to get credentials:', err.stack || err.message);
-    res.status(500).json({ success: false, error: 'Internal Server Error', credentials: [] });
+  const trustProxyConfig = options.trustProxy ?? process.env.TRUST_PROXY;
+  if (trustProxyConfig !== undefined && trustProxyConfig !== null) {
+    app.set('trust proxy', trustProxyConfig === 'true' ? true : (trustProxyConfig === 'false' ? false : trustProxyConfig));
+  } else {
+    app.set('trust proxy', false);
   }
-});
 
-app.get('/credentials/:credentialId/history', requireBearerAuth, async (req, res) => {
-  try {
-    const { credentialId } = req.params;
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    if (!credentialId || !uuidRegex.test(credentialId)) {
-      return res.status(400).json({
-        error: 'Invalid parameter: credentialId must be a valid UUID v4',
-        code: 'INVALID_PARAMETER',
+  const bodyLimit = options.bodyLimit ?? process.env.BODY_LIMIT ?? '100kb';
+  app.use(express.json({ limit: bodyLimit }));
+  app.use(helmet());
+
+  const rateLimitMax = options.rateLimitMax ?? (
+    process.env.RATE_LIMIT_MAX
+      ? parseInt(process.env.RATE_LIMIT_MAX, 10)
+      : (process.env.NODE_ENV === 'test' ? 100000 : 60)
+  );
+
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: rateLimitMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false, trustProxy: false, default: true },
+    message: { error: 'Too many requests, please try again later', code: 'RATE_LIMITED' }
+  });
+
+  app.use('/issue', apiLimiter);
+  app.use('/verify', apiLimiter);
+  app.use('/status', apiLimiter);
+  app.use('/credentials', apiLimiter);
+  app.use('/revoke', apiLimiter);
+  app.use('/audit', apiLimiter);
+  app.use('/reconciliation', apiLimiter);
+
+  // Health check endpoint (unauthenticated)
+  app.get('/healthz', (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'verification-api'
+    });
+  });
+
+  // /verify is intentionally open to unauthenticated callers
+  app.post('/verify', verifyRoute);
+
+  // All write endpoints and administrative logs require scoped authentication
+  app.post('/issue', requireBearerAuth, issueRoute);
+  app.post('/issue/:credentialId/retry-anchor', requireBearerAuth, retryAnchorRoute);
+  app.get('/status/:id', requireBearerAuth, statusRoute);
+  app.post('/revoke', requireRevokeAuth, revokeRoute);
+
+  app.get('/credentials', requireBearerAuth, async (req, res) => {
+    try {
+      const credentials = await getAllCredentials();
+      res.json({ success: true, credentials });
+    } catch (err) {
+      console.error('Failed to get credentials:', err.stack || err.message);
+      res.status(500).json({ success: false, error: 'Internal Server Error', credentials: [] });
+    }
+  });
+
+  app.get('/credentials/:credentialId/history', requireBearerAuth, async (req, res) => {
+    try {
+      const { credentialId } = req.params;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (!credentialId || !uuidRegex.test(credentialId)) {
+        return res.status(400).json({
+          error: 'Invalid parameter: credentialId must be a valid UUID v4',
+          code: 'INVALID_PARAMETER',
+        });
+      }
+      const history = await getProofHistory(credentialId.trim().toLowerCase());
+      res.json({ success: true, credentialId: credentialId.trim().toLowerCase(), history });
+    } catch (err) {
+      res.status(502).json({
+        success: false,
+        error: `Failed to retrieve ledger history: ${err.message}`,
+        code: 'LEDGER_QUERY_FAILED'
       });
     }
-    const history = await getProofHistory(credentialId.trim().toLowerCase());
-    res.json({ success: true, credentialId: credentialId.trim().toLowerCase(), history });
-  } catch (err) {
-    res.status(502).json({
-      success: false,
-      error: `Failed to retrieve ledger history: ${err.message}`,
-      code: 'LEDGER_QUERY_FAILED'
+  });
+
+  app.get('/audit', requireBearerAuth, (req, res) => {
+    const rawLimit = parseInt(req.query.limit, 10);
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+    const logs = getAuditLogs(limit);
+    res.json({ success: true, count: logs.length, logs });
+  });
+
+  app.get('/reconciliation', requireBearerAuth, (req, res) => {
+    res.json({ success: true, ...getReconciliationState() });
+  });
+
+  app.post('/reconciliation/run', requireBearerAuth, async (req, res) => {
+    try {
+      const state = await reconcileLedger();
+      res.json({ success: true, ...state });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Centralized error handling middleware for body limits, malformed JSON, and unsupported media
+  app.use((err, req, res, next) => {
+    if (err.type === 'entity.too.large' || err.status === 413) {
+      return res.status(413).json({
+        error: 'Payload Too Large: request entity exceeds body size limit',
+        code: 'PAYLOAD_TOO_LARGE'
+      });
+    }
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+      return res.status(400).json({
+        error: 'Bad Request: malformed JSON payload',
+        code: 'INVALID_JSON'
+      });
+    }
+    if (err.type === 'encoding.unsupported' || err.status === 415) {
+      return res.status(415).json({
+        error: 'Unsupported Media Type: unsupported content encoding',
+        code: 'UNSUPPORTED_ENCODING'
+      });
+    }
+    res.status(err.status || 500).json({
+      error: err.message || 'Internal Server Error',
+      code: err.code || 'INTERNAL_ERROR'
     });
-  }
-});
+  });
 
-app.get('/audit', requireBearerAuth, (req, res) => {
-  const rawLimit = parseInt(req.query.limit, 10);
-  const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-  const logs = getAuditLogs(limit);
-  res.json({ success: true, count: logs.length, logs });
-});
+  return app;
+}
 
-app.get('/reconciliation', requireBearerAuth, (req, res) => {
-  res.json({ success: true, ...getReconciliationState() });
-});
-
-app.post('/reconciliation/run', requireBearerAuth, async (req, res) => {
-  try {
-    const state = await reconcileLedger();
-    res.json({ success: true, ...state });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+const app = createApp();
 
 export function configureServerTimeouts(server) {
   const socketTimeout = parseInt(process.env.SERVER_SOCKET_TIMEOUT_MS, 10) || 15000;
