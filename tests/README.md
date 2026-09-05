@@ -161,12 +161,37 @@ cd components/verification-api && node --test tests/chaos_faults.test.js
 
 ---
 
-### 11. Unified Local Test Runner (`run_all_unit_tests.sh`)
+### 11. Load, Resource Exhaustion & DoS Posture (`load_dos.test.js`, `test_load_dos.py`) (§6)
+Validates system defenses against volumetric exhaustion, oversized payloads, rate limiter evasion, and memory leaks:
+- **Oversized Payload Enforcement**:
+  - **Verification API (Express)**: Configures explicit `express.json({ limit: '100kb' })` and central error middleware. Asserts that payloads > 100kb sent to `/verify`, `/issue`, or `/revoke` are immediately rejected with HTTP 413 (`PAYLOAD_TOO_LARGE`).
+  - **Crypto Microservice (Flask)**: Enforces `app.config['MAX_CONTENT_LENGTH'] = 1MB` and `@app.errorhandler(413)`. Multi-megabyte requests to `/sign_hash` or `/verify_hash` are aborted with HTTP 413 before memory allocation.
+- **Decompression Bomb Defense**: Sends small gzip-compressed payloads (~400 bytes) that decompress to > 100kb. Verifies that the JSON streaming parser aborts decompression upon reaching the limit and returns HTTP 413, preventing zip-bomb memory exhaustion.
+- **Malformed Content-Encoding & Corrupted Streams**: Evaluates corrupted gzip byte streams and unsupported compression types (`Content-Encoding: unsupported`). Verifies clean HTTP 400 (`INVALID_JSON`) and 415 (`UNSUPPORTED_ENCODING`) responses without microservice instability.
+- **Rate Limiter Enforcement & Evasion Resistance**:
+  - Validates that unauthenticated `/verify` enforces request limits and returns HTTP 429 (`RATE_LIMITED`) with a standard `Retry-After` header.
+  - Proves that spoofed/rotating `X-Forwarded-For` and `Client-IP` headers CANNOT bypass the IP-based rate limiter when `trust proxy` is disabled (`trustProxy: false`).
+  - Validates that when `trust proxy` is explicitly configured for reverse proxy environments, client IPs are correctly segregated.
+- **Sustained Burst Load & RSS Memory Stability**:
+  - Hammers `/sign_hash` and `/verify_hash` with 150 consecutive C sign/verify cycles and 15 concurrent threads. Monitors process RSS memory via `resource.getrusage`, confirming memory growth is strictly bounded and verifying that `instance.free()` and `zeroize()` deallocations hold under sustained load.
+  - Hammers unauthenticated `/verify` with 150 concurrent requests. Confirms 100% completion with 200 OK and bounded heap growth.
+
+```bash
+# Run verification gateway load & DoS tests
+cd components/verification-api && node --test tests/load_dos.test.js
+
+# Run crypto microservice load & DoS tests
+cd components/crypto/crypto-service && pytest test_load_dos.py
+```
+
+---
+
+### 12. Unified Local Test Runner (`run_all_unit_tests.sh`)
 Orchestrates discovery and execution of all decoupled component test suites across the repository in a single command:
 
-1. **Crypto Microservice**: Python interface, KMS zeroization, ML-DSA-65 signatures, auth truth tables, in-flight key rotation races, fuzz invariants, and Vault chaos tests (29 tests).
+1. **Crypto Microservice**: Python interface, KMS zeroization, ML-DSA-65 signatures, auth truth tables, in-flight key rotation races, fuzz invariants, Vault chaos tests, and load/DoS RSS memory profiling (33 tests).
 2. **Blockchain Chaincode**: Fabric mock contract unit, truth-table, concurrent execution, and monotonic revocation invariant suites running under Go `-race` detector (19 tests).
-3. **Verification Gateway API**: Node.js native test runner (`node --test` across 60 unit, boundary, race, fast-check property invariant, and chaos fault tests).
+3. **Verification Gateway API**: Node.js native test runner (`node --test` across 67 unit, boundary, race, fast-check property invariant, chaos fault, and load/DoS tests).
 4. **TypeScript SDK**: Jest test suite (6 tests covering client, revocation keys, and history queries).
 5. **RFC 8785 Canonicalization Fuzzer**: 5,000-iteration cross-engine generative fuzz suite.
 6. **Post-Quantum Tamper Sensitivity**: 26,472-bit exhaustive signature and commitment mutation suite.
@@ -187,9 +212,9 @@ bash tests/run_all_unit_tests.sh
 
 | Component / Track | Test Suite | Framework / Tooling | Scope / Test Count |
 | :--- | :--- | :--- | :--- |
-| **Crypto Microservice** | `components/crypto/crypto-service/test_*` | Python `unittest` / `liboqs` | 29 passed (includes vault chaos & network failure recovery) |
+| **Crypto Microservice** | `components/crypto/crypto-service/test_*` | Python `unittest` / `liboqs` | 33 passed (includes vault chaos, load/DoS & RSS profiling) |
 | **Blockchain Chaincode** | `components/blockchain/chaincode/src/*_test.go` | Go `testing` (`-race`) / `shimtest` | 19 passed (zero data races detected) |
-| **Verification Gateway** | `components/verification-api/tests/*` | Node.js Test Runner (`node --test`) | 60 passed (includes chaos, timeouts, slowloris & self-healing) |
+| **Verification Gateway** | `components/verification-api/tests/*` | Node.js Test Runner (`node --test`) | 67 passed (includes chaos, slowloris, load, DoS & rate limiting) |
 | **TypeScript SDK** | `sdk/test/index.test.ts` | Jest | 6 passed |
 | **Canonicalization Fuzzer** | `tests/fuzz_canonicalize_parity.py` | Python + Node.js Bridge | 5,000 fuzz runs (7 test methods) passed |
 | **Tamper Sensitivity** | `tests/test_tamper_sensitivity.py` | Python `unittest` / `liboqs` | 26,472 signature bit flips passed |

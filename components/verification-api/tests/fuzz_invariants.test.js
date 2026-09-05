@@ -365,14 +365,17 @@ test('Property (fast-check): RFC 8785 JSON Canonicalization Parity & Determinism
             const h2 = createHash('sha3-256').update(canon2, 'utf8').digest('hex');
             assert.equal(h1, h2, 'Hash of canonical output must be identical');
 
-            // If it is a top-level flat object with multiple keys, verify UTF-16 code unit ordering directly from JSON string
+            // If it is a top-level flat object with multiple keys, verify UTF-16 code unit ordering
             if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
               const keys = Object.keys(val);
               if (keys.length > 1 && keys.every(k => typeof val[k] !== 'object')) {
-                const outKeys = [...canon1.matchAll(/"((?:\\.|[^"\\])*)":/g)].map(m => JSON.parse(`"${m[1]}"`));
-                for (let i = 0; i < outKeys.length - 1; i++) {
-                  assert.ok(outKeys[i] <= outKeys[i + 1],
-                    `Keys not sorted in canonical output: ${outKeys[i]} > ${outKeys[i + 1]}`);
+                const sortedKeys = [...keys].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+                let lastIndex = 0;
+                for (const k of sortedKeys) {
+                  const keyRepr = JSON.stringify(k) + ':';
+                  const idx = canon1.indexOf(keyRepr, lastIndex);
+                  assert.ok(idx >= 0, `Expected key ${k} in RFC 8785 canonical order`);
+                  lastIndex = idx + keyRepr.length;
                 }
               }
             }

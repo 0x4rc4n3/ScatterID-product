@@ -9,6 +9,23 @@ from kms import KMS, zeroize
 from interface import issue_credential, verify_credential
 
 app = Flask(__name__)
+# Enforce body size limit to prevent volumetric memory exhaustion / DoS attacks
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 1024 * 1024))  # 1MB default
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({
+        "error": "Payload Too Large: request entity exceeds body size limit",
+        "code": "PAYLOAD_TOO_LARGE"
+    }), 413
+
+@app.errorhandler(400)
+def bad_request(error):
+    msg = error.description if hasattr(error, 'description') and error.description else "Bad Request"
+    return jsonify({
+        "error": str(msg),
+        "code": "BAD_REQUEST"
+    }), 400
 
 kms = KMS()
 PUBLIC_KEY, PRIVATE_KEY = kms.get_keys()
