@@ -146,12 +146,27 @@ cd components/verification-api && node --test tests/fuzz_invariants.test.js
 
 ---
 
-### 10. Unified Local Test Runner (`run_all_unit_tests.sh`)
+### 10. Chaos, Timeout, Network Failure & Distributed Fault Injection (`chaos_faults.test.js`, `test_chaos_vault.py`) (§5)
+Validates resilience and graceful degradation under network partitions, upstream hangs, distributed ambiguities, and connection exhaustion:
+- **Upstream Crypto Service Timeout & Slow-Response Handling**: Evaluates `/verify` and `/issue` against unresponsive and lagging upstream services. Confirms that `AbortSignal.timeout` terminates hanging upstream requests promptly, returning clean HTTP 504 Gateway Timeout (`CRYPTO_SERVICE_TIMEOUT`) rather than hanging caller connections indefinitely.
+- **TCP Connection Reset Mid-Response Fault Injection**: Injects abrupt TCP RST packets and socket destructions mid-stream during HTTP payload transit. Validates that the gateway catches socket hangups cleanly, returning HTTP 502 Bad Gateway (`CRYPTO_SERVICE_UNREACHABLE`), and strictly rejects truncated or partially-transmitted JSON bodies.
+- **Distributed Post-Commit Anchoring Ambiguity & Automated Self-Healing**: Simulates the classic distributed systems failure where an on-chain Fabric transaction commits successfully (status `active`), but an in-flight network timeout drops the response before reaching the gateway, causing local SQLite to record `anchor_failed`. Proves that `reconcileLedger()` discovers the discrepancy, auto-heals the local database record to `anchored`, and enables immediate downstream verification.
+- **Slowloris Partial HTTP Connection Exhaustion Defense**: Opens raw TCP sockets streaming partial HTTP request lines byte-by-byte. Verifies that `server.setTimeout` and `configureServerTimeouts` actively destroy lingering half-open sockets within configured limits, preventing thread pool exhaustion.
+- **Vault KMS Network Partition Fault Recovery**: Validates that when HashiCorp Vault is unreachable, `kms.get_keys()` fails loudly with structured exceptions rather than silently falling back to stale or cached key material, and `/rotate` returns HTTP 500 (`ROTATION_FAILED`) without destabilizing the microservice daemon.
+
+```bash
+# Run chaos and fault injection tests
+cd components/verification-api && node --test tests/chaos_faults.test.js
+```
+
+---
+
+### 11. Unified Local Test Runner (`run_all_unit_tests.sh`)
 Orchestrates discovery and execution of all decoupled component test suites across the repository in a single command:
 
-1. **Crypto Microservice**: Python interface, KMS zeroization, ML-DSA-65 signatures, auth truth tables, in-flight key rotation races, and fuzz invariants (26 tests).
+1. **Crypto Microservice**: Python interface, KMS zeroization, ML-DSA-65 signatures, auth truth tables, in-flight key rotation races, fuzz invariants, and Vault chaos tests (29 tests).
 2. **Blockchain Chaincode**: Fabric mock contract unit, truth-table, concurrent execution, and monotonic revocation invariant suites running under Go `-race` detector (19 tests).
-3. **Verification Gateway API**: Node.js native test runner (`node --test` across 55 unit, boundary, race, and fast-check property invariant tests).
+3. **Verification Gateway API**: Node.js native test runner (`node --test` across 60 unit, boundary, race, fast-check property invariant, and chaos fault tests).
 4. **TypeScript SDK**: Jest test suite (6 tests covering client, revocation keys, and history queries).
 5. **RFC 8785 Canonicalization Fuzzer**: 5,000-iteration cross-engine generative fuzz suite.
 6. **Post-Quantum Tamper Sensitivity**: 26,472-bit exhaustive signature and commitment mutation suite.
@@ -172,9 +187,9 @@ bash tests/run_all_unit_tests.sh
 
 | Component / Track | Test Suite | Framework / Tooling | Scope / Test Count |
 | :--- | :--- | :--- | :--- |
-| **Crypto Microservice** | `components/crypto/crypto-service/test_*` | Python `unittest` / `liboqs` | 26 passed (includes in-flight rotation race & fuzz invariants) |
+| **Crypto Microservice** | `components/crypto/crypto-service/test_*` | Python `unittest` / `liboqs` | 29 passed (includes vault chaos & network failure recovery) |
 | **Blockchain Chaincode** | `components/blockchain/chaincode/src/*_test.go` | Go `testing` (`-race`) / `shimtest` | 19 passed (zero data races detected) |
-| **Verification Gateway** | `components/verification-api/tests/*` | Node.js Test Runner (`node --test`) | 55 passed (includes fast-check fuzzing, boundary math, & race suites) |
+| **Verification Gateway** | `components/verification-api/tests/*` | Node.js Test Runner (`node --test`) | 60 passed (includes chaos, timeouts, slowloris & self-healing) |
 | **TypeScript SDK** | `sdk/test/index.test.ts` | Jest | 6 passed |
 | **Canonicalization Fuzzer** | `tests/fuzz_canonicalize_parity.py` | Python + Node.js Bridge | 5,000 fuzz runs (7 test methods) passed |
 | **Tamper Sensitivity** | `tests/test_tamper_sensitivity.py` | Python `unittest` / `liboqs` | 26,472 signature bit flips passed |

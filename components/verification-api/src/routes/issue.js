@@ -37,6 +37,7 @@ export async function issueRoute(req, res) {
     try {
       const cryptoUrl = process.env.CRYPTO_SERVICE_URL || 'https://localhost:5001';
       const cryptoApiKey = process.env.CRYPTO_SERVICE_API_KEY || '';
+      const cryptoTimeoutMs = parseInt(process.env.CRYPTO_SERVICE_TIMEOUT_MS, 10) || 5000;
       const response = await fetch(`${cryptoUrl}/sign_hash`, {
         method: 'POST',
         headers: {
@@ -44,6 +45,7 @@ export async function issueRoute(req, res) {
           'Authorization': `Bearer ${cryptoApiKey}`,
         },
         body: JSON.stringify({ dataHash: normalizedHash, credentialId }),
+        signal: AbortSignal.timeout(cryptoTimeoutMs),
       });
 
       if (!response.ok) {
@@ -64,16 +66,17 @@ export async function issueRoute(req, res) {
 
       credential = await response.json();
     } catch (err) {
+      const isTimeout = err.name === 'TimeoutError';
       recordAuditLog({
         credentialId,
         action: 'issue',
         status: 'failed',
-        details: { error: 'Cryptographic authority unreachable', message: err.message },
+        details: { error: isTimeout ? 'Cryptographic authority timed out' : 'Cryptographic authority unreachable', message: err.message },
         callerTier: 'bearer_api_key'
       });
-      return res.status(502).json({
-        error: 'Cryptographic authority unreachable',
-        code: 'CRYPTO_SERVICE_UNREACHABLE',
+      return res.status(isTimeout ? 504 : 502).json({
+        error: isTimeout ? 'Cryptographic authority request timed out' : 'Cryptographic authority unreachable',
+        code: isTimeout ? 'CRYPTO_SERVICE_TIMEOUT' : 'CRYPTO_SERVICE_UNREACHABLE',
       });
     }
 
