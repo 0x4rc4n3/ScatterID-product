@@ -58,7 +58,7 @@ app.use(helmet());
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 60, // 60 requests per minute per IP
+  max: process.env.NODE_ENV === 'test' ? 100000 : 60, // 60 requests per minute per IP in production
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later', code: 'RATE_LIMITED' }
